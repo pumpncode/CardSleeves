@@ -6,7 +6,7 @@ KNOWN ISSUES/TODO IDEAS:
 
 * TODO:
 ** split into seperate files once a mod manager exists
-** Up min SMODS to 0423a to get SMODS.DrawStep or 0525b for deck preview pages & hand limit API
+** Up min SMODS to 0423a to get SMODS.DrawStep & painted sleeve's context.before or 0525b for deck preview pages & hand limit API
 
 * ISSUES:
 ** What if locked sleeves in challenge?
@@ -28,8 +28,14 @@ CardSleeves = SMODS.current_mod
 
 -- not perfect, but works well enough afaik
 local in_collection = false
+local showing_stacked_effects = false
 local starting_run = false
 local is_in_run_info_tab = false
+local current_page = 1
+local hovered_sleeve = nil
+local collection_fake_deck = nil
+local stacked_effects_shown = {}
+local shown_ui_alt_desc = {}
 local game_args = {}
 
 local sleeve_count_horizontal = 6
@@ -335,6 +341,17 @@ end
 
 function CardSleeves.Sleeve.get_current_deck_key()
     if in_collection then
+        if collection_fake_deck then
+            return collection_fake_deck
+        elseif showing_stacked_effects and hovered_sleeve then
+            local sleeve = G.P_CENTERS[hovered_sleeve]
+            local effect = stacked_effects_shown[sleeve.key] or 1
+            if sleeve and sleeve.stacked_effects and sleeve.stacked_effects[effect] then
+                return sleeve.stacked_effects[effect]
+            elseif sleeve and sleeve.auto_stacked_effects and sleeve.auto_stacked_effects[effect] then
+                return sleeve.auto_stacked_effects[effect]
+            end
+        end
         -- bit hacky
         return "collection"
     elseif Galdur and Galdur.config.use and Galdur.run_setup.choices and Galdur.run_setup.choices.deck then
@@ -570,7 +587,7 @@ CardSleeves.Sleeve {
     calculate = function(self, sleeve, context)
         if context.create_card and context.card then
             local card = context.card
-            local is_spectral_pack = card.ability.set == "Booster" and card.ability.name:find("Spectral")
+            local is_spectral_pack = card.ability and card.ability.set == "Booster" and card.ability.name:find("Spectral")
             if is_spectral_pack and sleeve.config.spectral_more_options then
                card.ability.extra = card.ability.extra + sleeve.config.spectral_more_options
             end
@@ -626,7 +643,7 @@ CardSleeves.Sleeve {
 
         -- handle Strength and Ouija
         local card = context.card
-        local is_playing_card = card and (card.ability.set == "Default" or card.ability.set == "Enhanced") and card.config.card_key
+        local is_playing_card = card and card.ability and (card.ability.set == "Default" or card.ability.set == "Enhanced") and card.config and card.config.card_key
         if context.before_use_consumable and card then
             if card.ability.name == 'Strength' then
                 sleeve.in_strength = true
@@ -688,7 +705,7 @@ CardSleeves.Sleeve {
         end
 
         local card = context.card
-        local is_playing_card = card and (card.ability.set == "Default" or card.ability.set == "Enhanced") and card.config.card_key
+        local is_playing_card = card and card.ability and (card.ability.set == "Default" or card.ability.set == "Enhanced") and card.config and card.config.card_key
         if (context.create_card or context.modify_playing_card) and card and is_playing_card then
             for from_suit, to_suit in pairs(sleeve.config.force_suits) do
                 if card.base.suit == from_suit then
@@ -728,7 +745,7 @@ CardSleeves.Sleeve {
     calculate = function(self, sleeve, context)
         if context.create_card and context.card then
             local card = context.card
-            local is_booster_pack = card.ability.set == "Booster"
+            local is_booster_pack = card.ability and card.ability.set == "Booster"
             local is_arcana_pack = is_booster_pack and card.ability.name:find("Arcana")
             local is_celestial_pack = is_booster_pack and card.ability.name:find("Celestial")
             if is_arcana_pack and sleeve.config.arcana_more_options then
@@ -776,6 +793,16 @@ CardSleeves.Sleeve {
                     return true
                 end)
             }))
+        end
+    end,
+    calculate = function(self, sleeve, context)
+        if context.press_play or context.before then
+            -- use both contexts for very old smods versions (context.before can be removed after min 0423a)
+            if G.play.T.w < 6.2*G.CARD_W then
+                -- readjust played cards to not overlap
+                G.play.T.w = 6.2 * G.CARD_W
+                G.play.T.x = G.play.T.x - 0.25 * G.CARD_W
+            end
         end
     end
 }
@@ -859,7 +886,7 @@ CardSleeves.Sleeve {
                     for _, cardarea in pairs(cardareas) do
                         for _, card in pairs(cardarea.cards) do
                             card:set_cost()
-                            local has_coupon_tag = card.area and card.ability.couponed and (card.area == G.shop_jokers or card.area == G.shop_booster)
+                            local has_coupon_tag = card.ability and card.ability.couponed and card.area and (card.area == G.shop_jokers or card.area == G.shop_booster)
                             if has_coupon_tag then
                                 -- tags that set price to 0 (coupon, uncommon, rare, etc)
                                 card.cost = 0
@@ -1256,7 +1283,19 @@ local function populate_sleeve_card_areas(page, mod_id)
         if Galdur and Galdur.config.reduce then
             card_number = 1
         end
+
+        local sleeve_center = sleeve_pool[count]
         local selected_deck_center = in_collection and G.P_CENTERS.b_red or Galdur.run_setup.choices.deck.effect.center
+        local effect = stacked_effects_shown[sleeve_center.key] or 1
+
+        if showing_stacked_effects and in_collection then
+            if sleeve_center.stacked_effects and sleeve_center.stacked_effects[effect] then
+                selected_deck_center = G.P_CENTERS[sleeve_center.stacked_effects[effect]]
+            elseif sleeve_center.auto_stacked_effects and sleeve_center.auto_stacked_effects[effect] then
+                selected_deck_center = G.P_CENTERS[sleeve_center.auto_stacked_effects[effect]]
+            end
+        end
+
         for index = 1, card_number do
             local card = Card(area.T.x, area.T.y, area.T.w, area.T.h, selected_deck_center, selected_deck_center,
                 {galdur_back = Back(selected_deck_center)})
@@ -1274,10 +1313,10 @@ local function populate_sleeve_card_areas(page, mod_id)
                 card.sticker = get_deck_win_sticker(selected_deck_center)
             end
         end
-        local card = create_sleeve_card(area, sleeve_pool[count])
+        local card = create_sleeve_card(area, sleeve_center)
         card.params["sleeve_select"] = i
         card.sleeve_select_position = {page = page, count = i}
-        replace_sleeve_sprite(card, sleeve_pool[count])
+        replace_sleeve_sprite(card, sleeve_center)
         area:emplace(card)
         count = count + 1
     end
@@ -1314,23 +1353,42 @@ end
 
 local function create_sleeve_page_cycle(mod_id)
     local sleeve_pool = get_sleeve_pool(mod_id)
-    local options = {}
+    local options, current_option = {}, 1
     local cycle
     if #sleeve_pool > sleeve_count_page then
         local total_pages = math.ceil(#sleeve_pool / sleeve_count_page)
         for i=1, total_pages do
-            options[i] = localize('k_page')..' '..i..' / '..total_pages
+            options[i] = localize('k_page')..' '..i..'/'..total_pages
         end
-        cycle = create_option_cycle({
-            options = options,
-            w = 4.5,
-            opt_callback = 'change_sleeve_page',
-            ref_table = { mod_id = mod_id },
-            focus_args = { snap_to = true, nav = 'wide' },
-            current_option = 1,
-            colour = G.C.RED,
-            no_pips = true
-        })
+        if EremelUtility and EremelUtility.page_cycler then
+            cycle = EremelUtility.page_cycler{
+                options = options,
+                opt_callback = 'change_sleeve_page',
+                ref_table = { mod_id = mod_id },
+                focus_args = { snap_to = true, nav = 'wide' },
+                current_option = current_option,
+                no_pips = true,
+
+                object_table = sleeve_pool,
+                key = "sleeve_select_cycle",
+                page_size = sleeve_count_page,
+                h = 1,
+                button = "casl_option_cycle",
+                current_option_val = options[current_option],
+            }
+        else
+            cycle = create_option_cycle{
+                options = options,
+                opt_callback = 'change_sleeve_page',
+                ref_table = { mod_id = mod_id },
+                focus_args = { snap_to = true, nav = 'wide' },
+                current_option = current_option,
+                no_pips = true,
+
+                w = 4.5,
+                colour = G.C.RED
+            }
+        end
     end
     return {n = G.UIT.R, config = {align = "cm"}, nodes = {cycle}}
 end
@@ -1362,6 +1420,51 @@ local function create_fake_sleeve(sleeve)
     end
     setmetatable(fake_sleeve, getmetatable(sleeve))
     return fake_sleeve
+end
+
+local function generate_auto_stacked_effects(sleeve_center)
+    local auto_stacked_effects = {}
+    for _, back in ipairs(G.P_CENTER_POOLS.Back) do
+        collection_fake_deck = back.key
+        local fake_sleeve_center = create_fake_sleeve(sleeve_center)
+        local sleeve_localvars = sleeve_center["loc_vars"] and sleeve_center.loc_vars(fake_sleeve_center)
+        local sleeve_localkey = sleeve_localvars and sleeve_localvars.key or sleeve_center.key
+        if sleeve_localkey ~= sleeve_center.key then
+            auto_stacked_effects[#auto_stacked_effects+1] = collection_fake_deck
+        end
+    end
+    collection_fake_deck = nil
+    return auto_stacked_effects
+end
+
+local function handle_collection_click(card, direction)
+    if card.params and card.params.sleeve_card and in_collection and showing_stacked_effects then
+        local sleeve_center = card.config.center
+        if not sleeve_center then
+            return
+        end
+
+        local deck_stack = nil
+        if sleeve_center.stacked_effects and #sleeve_center.stacked_effects > 1 then
+            deck_stack = sleeve_center.stacked_effects
+        elseif not sleeve_center.stacked_effects then
+            if sleeve_center.auto_stacked_effects == nil then
+                sleeve_center.auto_stacked_effects = generate_auto_stacked_effects(sleeve_center)
+            end
+            deck_stack = sleeve_center.auto_stacked_effects
+        end
+
+        if deck_stack and #deck_stack > 1 then
+            stacked_effects_shown[sleeve_center.key] = (stacked_effects_shown[sleeve_center.key] or 1) + direction
+            if stacked_effects_shown[sleeve_center.key] > #deck_stack then
+                stacked_effects_shown[sleeve_center.key] = 1
+            elseif stacked_effects_shown[sleeve_center.key] == 0 then
+                stacked_effects_shown[sleeve_center.key] = #deck_stack
+            end
+            clean_sleeve_areas()
+            populate_sleeve_card_areas(current_page, G.ACTIVE_MOD_UI and G.ACTIVE_MOD_UI.id or nil)
+        end
+    end
 end
 --#endregion
 
@@ -1410,6 +1513,25 @@ end
 G.FUNCS.change_sleeve_page = function(args)
     clean_sleeve_areas()
     populate_sleeve_card_areas(args.cycle_config.current_option, args.cycle_config.ref_table.mod_id)
+    current_page = args.cycle_config.current_option
+end
+
+G.FUNCS.casl_option_cycle = function(e)
+    -- wrapper around G.FUNCS.option_cycle, converting Galdur's button to Balatro's default button
+    local convert = false
+    if e and e.config and e.config.pass_through then
+        convert = true
+        e.config.ref_table = e.config.pass_through
+        e.config.ref_value = e.config.direction == 1 and 'r' or 'l'
+    end
+    local result = G.FUNCS.option_cycle(e)
+    if convert then
+        e.config.pass_through = e.config.ref_table
+        if e.config.pass_through.page_label and e.config.pass_through.page_label.text and e.config.ref_table.current_option_val then
+            e.config.pass_through.page_label.text = e.config.ref_table.current_option_val
+        end
+    end
+    return result
 end
 
 G.FUNCS.casl_cycle_options = function(args)
@@ -2005,7 +2127,7 @@ function Card:set_base(card, initial)
 
     if not is_in_run_info_tab and self.ability then
         local sleeve_center = CardSleeves.Sleeve:get_obj(G.GAME.selected_sleeve or "sleeve_casl_none")
-        local is_playing_card = (self.ability.set == "Default" or self.ability.set == "Enhanced") and self.config.card_key
+        local is_playing_card = (self.ability.set == "Default" or self.ability.set == "Enhanced") and self.config and self.config.card_key
         if initial then
             sleeve_center:trigger_effect{context = {create_card = true, card = self}}
             if type(sleeve_center.calculate) == "function" then sleeve_center:calculate(sleeve_center, {create_card = true, card = self}) end
@@ -2052,6 +2174,7 @@ function Card:hover()
         local col = self.params.deck_preview and G.UIT.C or G.UIT.R
         local info_col = self.params.deck_preview and G.UIT.R or G.UIT.C
         local sleeve_center = self.config.center
+        hovered_sleeve = sleeve_center.key
         local fake_sleeve_center = create_fake_sleeve(sleeve_center)
         local sleeve_localvars = sleeve_center["loc_vars"] and sleeve_center.loc_vars(fake_sleeve_center)
         local sleeve_localkey = sleeve_localvars and sleeve_localvars.key or sleeve_center.key
@@ -2116,6 +2239,33 @@ function Card:hover()
     else
         old_Card_hover(self)
     end
+end
+
+local old_Card_click = Card.click
+function Card:click()
+    -- left click
+    handle_collection_click(self, 1)
+    return old_Card_click(self)
+end
+
+local old_Card_right_click = Card.right_click or function() end
+function Card:right_click()
+    -- right click (doesn't exist normally)
+    handle_collection_click(self, -1)
+    return old_Card_right_click(self)
+end
+
+local old_Controller_queue_R_cursor_press = Controller.queue_R_cursor_press
+function Controller:queue_R_cursor_press(x, y)
+    -- handle right clicks on cards (janky)
+    if ((self.locked) and (not G.SETTINGS.paused or G.screenwipe)) or (self.locks.frame) then return end
+    local press_node = (self.HID.touch and self.cursor_hover.target) or self.hovering.target or self.focused.target
+    press_node = press_node and press_node.states.click.can and press_node or press_node:can_drag() or nil
+    if press_node and press_node.is and type(press_node.is) == "function" and press_node:is(Card) then
+        press_node:right_click()
+    end
+
+    return old_Controller_queue_R_cursor_press(self, x, y)
 end
 
 local old_Card_align_h_popup = Card.align_h_popup
@@ -2475,16 +2625,50 @@ SMODS.current_mod.custom_collection_tabs = function()
 end
 
 local function create_UI_alt_description()
-    return {n = G.UIT.R, config = {align = "cm"}, nodes = {
-        {n=G.UIT.O, config={object = DynaText({string = localize("sleeve_unique_effect_desc"), shadow = true, bump = true, scale = 0.5, pop_in = 0, silent = true})}},
+    if not shown_ui_alt_desc.string then
+        shown_ui_alt_desc.string = localize("sleeve_normal_effect_desc")
+    end
+
+    return {n = G.UIT.R, config = {align = "cm", minw = 15}, nodes = {
+        {n=G.UIT.O, config={object = DynaText({string = {{ref_table = shown_ui_alt_desc, ref_value = 'string'}}, shadow = true, bump = true, scale = 0.5, pop_in = 0, silent = true})}},
     }}
+end
+
+G.FUNCS.change_sleeve_shown_effect = function(args)
+    showing_stacked_effects = args.cycle_config.current_option == 2
+    shown_ui_alt_desc.string = localize(showing_stacked_effects and "sleeve_stacked_effect_desc" or "sleeve_normal_effect_desc")
+    for _, sleeve_center in pairs(get_sleeve_pool()) do
+        if not sleeve_center.auto_stacked_effects and not sleeve_center.stacked_effects then
+            sleeve_center.auto_stacked_effects = generate_auto_stacked_effects(sleeve_center)
+        end
+    end
+    clean_sleeve_areas()
+    populate_sleeve_card_areas(current_page, args.cycle_config.ref_table.mod_id)
+end
+
+local function create_stacked_effect_cycle(mod_id)
+    local cycle = create_option_cycle({
+        options = {
+            localize('sleeve_normal_effects'),
+            localize('sleeve_stacked_effects')
+        },
+        ref_table = { mod_id = mod_id },
+        w = 4.5,
+        opt_callback = 'change_sleeve_shown_effect',
+        focus_args = { snap_to = true, nav = 'wide' },
+        current_option = 1,
+        colour = G.C.RED,
+    })
+
+    return {n = G.UIT.R, config = {align = "cm"}, nodes = {cycle}}
 end
 
 local function create_UIBox_sleeves(mod_id)
     generate_sleeve_card_areas()
-    local sleeve_pages = {n=G.UIT.C, config = {padding = 0.15}, nodes ={
+    local sleeve_pages = {n=G.UIT.C, config = {padding = 0.15, align = 'cm'}, nodes ={
         generate_sleeve_card_areas_ui(mod_id),
         create_sleeve_page_cycle(mod_id),
+        create_stacked_effect_cycle(mod_id),
         create_UI_alt_description(),
     }}
     return create_UIBox_generic_options{
@@ -2494,6 +2678,10 @@ local function create_UIBox_sleeves(mod_id)
 end
 
 G.FUNCS.your_collection_sleeves = function()
+    showing_stacked_effects = false
+    stacked_effects_shown = {}
+    current_page = 1
+
 	G.SETTINGS.paused = true
 	G.FUNCS.overlay_menu{
         definition = create_UIBox_sleeves(G.ACTIVE_MOD_UI and G.ACTIVE_MOD_UI.id or nil),
