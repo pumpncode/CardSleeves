@@ -2260,9 +2260,11 @@ function Controller:queue_R_cursor_press(x, y)
     -- handle right clicks on cards (janky)
     if ((self.locked) and (not G.SETTINGS.paused or G.screenwipe)) or (self.locks.frame) then return end
     local press_node = (self.HID.touch and self.cursor_hover.target) or self.hovering.target or self.focused.target
-    press_node = press_node and press_node.states.click.can and press_node or press_node:can_drag() or nil
-    if press_node and press_node.is and type(press_node.is) == "function" and press_node:is(Card) then
-        press_node:right_click()
+    if press_node then
+        press_node = press_node.states.click.can and press_node or press_node:can_drag() or nil
+        if press_node and press_node.is and type(press_node.is) == "function" and press_node:is(Card) then
+            press_node:right_click()
+        end
     end
 
     return old_Controller_queue_R_cursor_press(self, x, y)
